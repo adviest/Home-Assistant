@@ -1,0 +1,207 @@
+blueprint:
+  name: "Open Window Energy Guard"
+  description: >
+    Monitors a window sensor and fires tiered alerts based on open duration
+    and/or temperature drop. Level 1 = informational after X minutes open.
+    Level 2 = warning after Y minutes OR when room temp drops below heating
+    setpoint. At Level 2 the zone heating switch is automatically turned off.
+    An optional "window closed" action set reacts when the window is shut again.
+  domain: automation
+  input:
+
+    # ── Window ──────────────────────────────────────────────────────────────
+    window_sensor:
+      name: Window Sensor
+      description: Binary sensor for the window (on = open).
+      selector:
+        entity:
+          domain: binary_sensor
+
+    # ── Timing thresholds ───────────────────────────────────────────────────
+    level1_minutes:
+      name: Level 1 – Alert after (minutes)
+      description: Minutes the window must be open before Level 1 fires.
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 120
+          unit_of_measurement: min
+
+    level2_minutes:
+      name: Level 2 – Escalate after (minutes)
+      description: Minutes the window must be open before Level 2 fires (time-based escalation).
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 240
+          unit_of_measurement: min
+
+    # ── Climate / Temperature ────────────────────────────────────────────────
+    climate_entity:
+      name: Climate Entity (zone)
+      description: The climate entity for this area (used to read setpoint and turn off heating).
+      selector:
+        entity:
+          domain: climate
+
+    temp_sensor:
+      name: Temperature Sensor
+      description: Indoor temperature sensor for this area.
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+
+    temp_drop_threshold:
+      name: Temp-drop Level 2 trigger (°C below setpoint)
+      description: >
+        If the room temperature falls this many degrees below the climate
+        setpoint, Level 2 fires immediately (regardless of time).
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 3
+          step: 0.5
+          unit_of_measurement: "°C"
+
+    # ── Zone heating switch (Airzone) ────────────────────────────────────────
+    heating_switch:
+      name: Zone Heating Switch
+      description: >
+        The switch that enables/disables this zone (e.g. switch.airzone_salon).
+        It will be turned OFF automatically at Level 2.
+      selector:
+        entity:
+          domain: switch
+
+    # ── Level 1 actions ─────────────────────────────────────────────────────
+    level1_actions:
+      name: Level 1 Actions (informational)
+      description: >
+        Actions to run when Level 1 is reached (e.g. send a soft mobile
+        notification, turn on an indicator light at low brightness).
+      default: []
+      selector:
+        action: {}
+
+    # ── Level 2 actions ─────────────────────────────────────────────────────
+    level2_actions:
+      name: Level 2 Actions (warning)
+      description: >
+        Actions to run when Level 2 is reached (e.g. flash a light, send an
+        urgent push notification). Heating will ALSO be stopped automatically.
+      default: []
+      selector:
+        action: {}
+
+    # ── Window-closed actions ────────────────────────────────────────────────
+    closed_actions:
+      name: Window Closed Actions (optional)
+      description: >
+        Actions to run when the window is closed again (e.g. turn off
+        indicator light, clear notification badge).
+      default: []
+      selector:
+        action: {}
+
+# ── Variables ──────────────────────────────────────────────────────────────
+variables:
+  climate_entity: !input climate_entity
+  temp_sensor: !input temp_sensor
+  temp_drop_threshold: !input temp_drop_threshold
+  heating_switch: !input heating_switch
+
+# ── Triggers ───────────────────────────────────────────────────────────────
+trigger:
+  # Window opened → start timing for L1
+  - platform: state
+    entity_id: !input window_sensor
+    to: "on"
+    for:
+      minutes: !input level1_minutes
+    id: level1_time
+
+  # Window opened → start timing for L2 (time-based)
+  - platform: state
+    entity_id: !input window_sensor
+    to: "on"
+    for:
+      minutes: !input level2_minutes
+    id: level2_time
+
+  # Temperature drops below setpoint − threshold while window is open
+  - platform: template
+    value_template: >
+      {% set current_temp = states(temp_sensor) | float(99) %}
+      {% set setpoint = state_attr(climate_entity, 'temperature') | float(0) %}
+      {{ is_state(window_sensor_entity, 'on') and
+         current_temp < (setpoint - temp_drop_threshold) }}
+    id: level2_temp
+
+  # Window closed
+  - platform: state
+    entity_id: !input window_sensor
+    to: "off"
+    id: window_closed
+
+# ── Conditions ─────────────────────────────────────────────────────────────
+condition: []
+
+# ── Actions ────────────────────────────────────────────────────────────────
+action:
+  - variables:
+      window_sensor_entity: !input window_sensor
+
+  - choose:
+
+      # ── LEVEL 1 ─────────────────────────────────────────────────────────
+      - conditions:
+          - condition: trigger
+            id: level1_time
+          - condition: state
+            entity_id: !input window_sensor
+            state: "on"
+        sequence:
+          - choose: []
+            default: !input level1_actions
+
+      # ── LEVEL 2 (time-based) ─────────────────────────────────────────────
+      - conditions:
+          - condition: trigger
+            id: level2_time
+          - condition: state
+            entity_id: !input window_sensor
+            state: "on"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input heating_switch
+          - choose: []
+            default: !input level2_actions
+
+      # ── LEVEL 2 (temp-drop) ──────────────────────────────────────────────
+      - conditions:
+          - condition: trigger
+            id: level2_temp
+          - condition: state
+            entity_id: !input window_sensor
+            state: "on"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input heating_switch
+          - choose: []
+            default: !input level2_actions
+
+      # ── WINDOW CLOSED ────────────────────────────────────────────────────
+      - conditions:
+          - condition: trigger
+            id: window_closed
+        sequence:
+          - choose: []
+            default: !input closed_actions
+
+mode: restart
