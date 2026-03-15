@@ -26,9 +26,9 @@ You can set the alert times, temperature thresholds, and actions for each stage.
 
 ### Quick Add
 
-[![Add to Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?domain=automation&url=https://github.com/adviest/Home-Assistant/raw/main/Blueprints/open_window_energy_ward.yaml)
+[![Add to Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fadviest%2FHome-Assistant%2Fmain%2FBlueprints%2Fopen_window_energy_ward.yaml)
 
----
+--- 
 
 ### Usage
 
