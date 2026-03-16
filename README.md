@@ -9,7 +9,7 @@ This repository contains code and automations for [Home Assistant](https://www.h
 
 ---
 
-## 🪟 Open Window Energy Ward Blueprint
+## 🪟 Open Window Energy Guard Blueprint
 
 **Purpose:**  
 This blueprint helps you save energy by monitoring a window sensor and taking action when a window is left open in a heated room. It uses tiered alerts and can automatically turn off heating when a window is open and the room starts cooling. When the window closes, heating is restored only if the blueprint was the one that turned it off.
