@@ -1,5 +1,5 @@
 blueprint:
-  name: "Open Window Energy Ward"
+  name: "Open Window Energy Guard"
   description: >
     Monitors a window sensor and fires tiered alerts based on open duration
     and/or temperature drop since the window was opened. Level 1 = informational
@@ -10,7 +10,7 @@ blueprint:
     and the switch is still off. Requires one input_number and one input_boolean
     helper per zone.
   domain: automation
-  source_url: https://github.com/adviest/Home-Assistant/blob/main/Blueprints/open_window_energy_ward.yaml
+  source_url: https://github.com/adviest/Home-Assistant/blob/main/Blueprints/open_window_energy_guard.yaml
   input:
 
     # ── Window ──────────────────────────────────────────────────────────────
