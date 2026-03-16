@@ -1,12 +1,16 @@
 blueprint:
-  name: "Open Window Energy Guard"
+  name: "Open Window Energy Ward"
   description: >
     Monitors a window sensor and fires tiered alerts based on open duration
-    and/or temperature drop. Level 1 = informational after X minutes open.
-    Level 2 = warning after Y minutes OR when room temp drops below heating
-    setpoint. At Level 2 the zone heating switch is automatically turned off.
-    An optional "window closed" action set reacts when the window is shut again.
+    and/or temperature drop since the window was opened. Level 1 = informational
+    after X minutes open. Level 2 = warning after Y minutes OR when room temp
+    drops more than Z degrees from the temperature at the moment the window opened.
+    At Level 2 the zone heating switch is automatically turned off.
+    When the window closes, heating is restored only if the blueprint turned it off
+    and the switch is still off. Requires one input_number and one input_boolean
+    helper per zone.
   domain: automation
+  source_url: https://github.com/adviest/Home-Assistant/blob/main/Blueprints/open_window_energy_ward.yaml
   input:
 
     # ── Window ──────────────────────────────────────────────────────────────
@@ -38,14 +42,7 @@ blueprint:
           max: 240
           unit_of_measurement: min
 
-    # ── Climate / Temperature ────────────────────────────────────────────────
-    climate_entity:
-      name: Climate Entity (zone)
-      description: The climate entity for this area (used to read setpoint and turn off heating).
-      selector:
-        entity:
-          domain: climate
-
+    # ── Temperature ──────────────────────────────────────────────────────────
     temp_sensor:
       name: Temperature Sensor
       description: Indoor temperature sensor for this area.
@@ -54,28 +51,49 @@ blueprint:
           domain: sensor
           device_class: temperature
 
-    temp_drop_threshold:
-      name: Temp-drop Level 2 trigger (°C below setpoint)
+    temp_drop_from_open:
+      name: Temp-drop Level 2 trigger (°C drop since window opened)
       description: >
-        If the room temperature falls this many degrees below the climate
-        setpoint, Level 2 fires immediately (regardless of time).
-      default: 0
+        Level 2 fires if the temperature drops this many degrees from the value
+        recorded when the window was opened. Set to 0 to disable this trigger.
+      default: 1.0
       selector:
         number:
           min: 0
-          max: 3
+          max: 5.0
           step: 0.5
           unit_of_measurement: "°C"
+
+    temp_at_open_helper:
+      name: Temp-at-open Helper
+      description: >
+        An input_number helper to persist the temperature snapshot taken when
+        the window opens. Create one per zone in Settings → Helpers → Number
+        (range -10 to 40, step 0.1). Reset to 0 automatically on window close.
+      selector:
+        entity:
+          domain: input_number
 
     # ── Zone heating switch (Airzone) ────────────────────────────────────────
     heating_switch:
       name: Zone Heating Switch
       description: >
         The switch that enables/disables this zone (e.g. switch.airzone_salon).
-        It will be turned OFF automatically at Level 2.
+        Turned OFF automatically at Level 2, restored on window close only if
+        the blueprint was the one that turned it off and it is still off.
       selector:
         entity:
           domain: switch
+
+    heating_stopped_flag:
+      name: Heating Stopped by Blueprint Flag
+      description: >
+        An input_boolean helper to track whether this blueprint turned off the
+        heating. Prevents restoring heating if the user had already turned it
+        off manually. Create one per zone in Settings → Helpers → Toggle.
+      selector:
+        entity:
+          domain: input_boolean
 
     # ── Level 1 actions ─────────────────────────────────────────────────────
     level1_actions:
@@ -109,13 +127,21 @@ blueprint:
 
 # ── Variables ──────────────────────────────────────────────────────────────
 variables:
-  climate_entity: !input climate_entity
   temp_sensor: !input temp_sensor
-  temp_drop_threshold: !input temp_drop_threshold
+  temp_drop_from_open: !input temp_drop_from_open
   heating_switch: !input heating_switch
+  heating_stopped_flag: !input heating_stopped_flag
+  window_sensor_entity: !input window_sensor
+  temp_at_open_helper: !input temp_at_open_helper
 
 # ── Triggers ───────────────────────────────────────────────────────────────
 trigger:
+  # Window just opened → snapshot temperature into helper
+  - platform: state
+    entity_id: !input window_sensor
+    to: "on"
+    id: window_just_opened
+
   # Window opened → start timing for L1
   - platform: state
     entity_id: !input window_sensor
@@ -132,13 +158,17 @@ trigger:
       minutes: !input level2_minutes
     id: level2_time
 
-  # Temperature drops below setpoint − threshold while window is open
+  # Temperature has dropped more than threshold since window opened
   - platform: template
     value_template: >
       {% set current_temp = states(temp_sensor) | float(99) %}
-      {% set setpoint = state_attr(climate_entity, 'temperature') | float(0) %}
-      {{ is_state(window_sensor_entity, 'on') and
-         current_temp < (setpoint - temp_drop_threshold) }}
+      {% set snapshot = states(temp_at_open_helper) | float(0) %}
+      {% set drop = temp_drop_from_open | float(0) %}
+      {{ states(temp_sensor) not in ['unavailable', 'unknown', 'none'] and
+         is_state(window_sensor_entity, 'on') and
+         drop > 0 and
+         snapshot > 0 and
+         current_temp <= (snapshot - drop) }}
     id: level2_temp
 
   # Window closed
@@ -152,18 +182,36 @@ condition: []
 
 # ── Actions ────────────────────────────────────────────────────────────────
 action:
-  - variables:
-      window_sensor_entity: !input window_sensor
-
   - choose:
 
-      # ── LEVEL 1 ─────────────────────────────────────────────────────────
+      # ── SNAPSHOT temp when window opens → write to input_number helper ────
+      - conditions:
+          - condition: trigger
+            id: window_just_opened
+        sequence:
+          - condition: template
+            value_template: >
+              {{ states(temp_sensor) not in ['unavailable', 'unknown', 'none'] }}
+          - service: input_number.set_value
+            continue_on_error: true
+            target:
+              entity_id: !input temp_at_open_helper
+            data:
+              value: "{{ states(temp_sensor) | float(0) }}"
+
+      # ── LEVEL 1 ──────────────────────────────────────────────────────────
       - conditions:
           - condition: trigger
             id: level1_time
           - condition: state
             entity_id: !input window_sensor
             state: "on"
+          - condition: state
+            entity_id: !input heating_switch
+            state: "on"
+          - condition: template
+            value_template: >
+              {{ states(temp_sensor) not in ['unavailable', 'unknown', 'none'] }}
         sequence:
           - choose: []
             default: !input level1_actions
@@ -175,8 +223,19 @@ action:
           - condition: state
             entity_id: !input window_sensor
             state: "on"
+          - condition: state
+            entity_id: !input heating_switch
+            state: "on"
+          - condition: template
+            value_template: >
+              {{ states(temp_sensor) not in ['unavailable', 'unknown', 'none'] }}
         sequence:
+          - service: input_boolean.turn_on        # mark that blueprint turned off heating
+            continue_on_error: true
+            target:
+              entity_id: !input heating_stopped_flag
           - service: switch.turn_off
+            continue_on_error: true
             target:
               entity_id: !input heating_switch
           - choose: []
@@ -187,10 +246,18 @@ action:
           - condition: trigger
             id: level2_temp
           - condition: state
-            entity_id: !input window_sensor
+            entity_id: !input heating_switch
             state: "on"
+          - condition: template
+            value_template: >
+              {{ states(temp_sensor) not in ['unavailable', 'unknown', 'none'] }}
         sequence:
+          - service: input_boolean.turn_on        # mark that blueprint turned off heating
+            continue_on_error: true
+            target:
+              entity_id: !input heating_stopped_flag
           - service: switch.turn_off
+            continue_on_error: true
             target:
               entity_id: !input heating_switch
           - choose: []
@@ -201,7 +268,30 @@ action:
           - condition: trigger
             id: window_closed
         sequence:
+          - service: input_number.set_value       # reset temp snapshot
+            continue_on_error: true
+            target:
+              entity_id: !input temp_at_open_helper
+            data:
+              value: 0
+          - if:
+              - condition: state               # only restore if blueprint stopped it
+                entity_id: !input heating_stopped_flag
+                state: "on"
+              - condition: state               # only restore if switch is still off
+                entity_id: !input heating_switch
+                state: "off"
+            then:
+              - service: switch.turn_on
+                continue_on_error: true
+                target:
+                  entity_id: !input heating_switch
+              - service: input_boolean.turn_off
+                continue_on_error: true
+                target:
+                  entity_id: !input heating_stopped_flag
           - choose: []
-            default: !input closed_actions
+            default: !input closed_actions    # always runs regardless of above
 
-mode: restart
+mode: single
+max_exceeded: silent
