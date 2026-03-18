@@ -133,6 +133,8 @@ variables:
   heating_stopped_flag: !input heating_stopped_flag
   window_sensor_entity: !input window_sensor
   temp_at_open_helper: !input temp_at_open_helper
+  level1_minutes: !input level1_minutes
+  level2_minutes: !input level2_minutes
 
 # ── Triggers ───────────────────────────────────────────────────────────────
 trigger:
